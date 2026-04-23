@@ -1,15 +1,16 @@
 """Hardware profile utilities for personalized model recommendations."""
 
 import json
+import os
 import re
 import socket
 from pathlib import Path
 from typing import Any, Optional
 
 # Path to hardware profiles config
-DATA_DIR = Path(__file__).parent.parent / "data"
-HARDWARE_PROFILES_PATH = DATA_DIR / "hardware_profiles.json"
-VRAM_ESTIMATES_PATH = DATA_DIR / "vram_estimates.json"
+DATA_DIR = Path(os.environ.get("SOTA_DATA_DIR", Path(__file__).parent.parent / "data")).expanduser()
+HARDWARE_PROFILES_PATH = Path(os.environ.get("SOTA_HARDWARE_PROFILES_PATH", DATA_DIR / "hardware_profiles.json")).expanduser()
+VRAM_ESTIMATES_PATH = Path(os.environ.get("SOTA_VRAM_ESTIMATES_PATH", DATA_DIR / "vram_estimates.json")).expanduser()
 
 # Default VRAM estimates for concurrent workloads (in GB)
 # These are conservative estimates based on common model requirements as of Jan 2026

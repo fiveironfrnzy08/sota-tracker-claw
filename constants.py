@@ -1,5 +1,6 @@
 """Centralized constants for SOTA Tracker."""
 
+import os
 from pathlib import Path
 
 # =============================================================================
@@ -7,11 +8,11 @@ from pathlib import Path
 # =============================================================================
 
 PROJECT_DIR = Path(__file__).parent
-DATA_DIR = PROJECT_DIR / "data"
-DB_PATH = DATA_DIR / "sota.db"
-FORBIDDEN_PATH = DATA_DIR / "forbidden.json"
-HARDWARE_PROFILES_PATH = DATA_DIR / "hardware_profiles.json"
-VRAM_ESTIMATES_PATH = DATA_DIR / "vram_estimates.json"
+DATA_DIR = Path(os.environ.get("SOTA_DATA_DIR", PROJECT_DIR / "data")).expanduser()
+DB_PATH = Path(os.environ.get("SOTA_DB_PATH", DATA_DIR / "sota.db")).expanduser()
+FORBIDDEN_PATH = Path(os.environ.get("SOTA_FORBIDDEN_PATH", DATA_DIR / "forbidden.json")).expanduser()
+HARDWARE_PROFILES_PATH = Path(os.environ.get("SOTA_HARDWARE_PROFILES_PATH", DATA_DIR / "hardware_profiles.json")).expanduser()
+VRAM_ESTIMATES_PATH = Path(os.environ.get("SOTA_VRAM_ESTIMATES_PATH", DATA_DIR / "vram_estimates.json")).expanduser()
 
 # =============================================================================
 # TIMEOUTS

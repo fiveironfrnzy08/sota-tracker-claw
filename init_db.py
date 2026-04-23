@@ -9,11 +9,7 @@ Run this once to set up the database:
 import json
 import sqlite3
 from datetime import datetime
-from pathlib import Path
-
-PROJECT_DIR = Path(__file__).parent
-DATA_DIR = PROJECT_DIR / "data"
-DB_PATH = DATA_DIR / "sota.db"
+from constants import DATA_DIR, DB_PATH
 
 # Ensure data directory exists
 DATA_DIR.mkdir(exist_ok=True)
@@ -22,6 +18,9 @@ DATA_DIR.mkdir(exist_ok=True)
 def create_schema(db: sqlite3.Connection):
     """Create database schema."""
     db.executescript("""
+        -- Use DELETE journal mode so Bun can open the DB readonly
+        PRAGMA journal_mode=DELETE;
+
         -- Models table (updated with is_open_source)
         CREATE TABLE IF NOT EXISTS models (
             id TEXT PRIMARY KEY,
@@ -1298,8 +1297,120 @@ def seed_sota_models(db: sqlite3.Connection):
         },
 
         # =====================================================================
-        # EMBEDDINGS
+        # EMBEDDINGS (updated April 2026)
         # =====================================================================
+        {
+            "id": "gemini-embedding-2",
+            "name": "Gemini Embedding 2 (Google)",
+            "category": "embeddings",
+            "release_date": "2026-03-10",
+            "is_sota": True,
+            "is_open_source": False,
+            "sota_rank": 1,
+            "sota_rank_open": None,
+            "metrics": {
+                "notes": "#1 embeddings overall, first native multimodal (text/image/video/audio/PDF), MTEB English 68.32",
+                "why_sota": "Highest MTEB English score by ~6 pts, native multimodal embedding into shared vector space",
+                "strengths": ["Multimodal", "MTEB #1", "Matryoshka dims 768-3072", "$0.20/M tokens"],
+                "use_cases": ["Multimodal RAG", "Cross-modal search", "Enterprise search", "Document understanding"]
+            }
+        },
+        {
+            "id": "llama-embed-nemotron-8b",
+            "name": "Llama-Embed-Nemotron-8B (NVIDIA)",
+            "category": "embeddings",
+            "release_date": "2025-10-21",
+            "is_sota": True,
+            "is_open_source": True,
+            "sota_rank": 2,
+            "sota_rank_open": 1,
+            "metrics": {
+                "notes": "#1 open-source embeddings, #1 MMTEB multilingual (69.46), fine-tuned Llama-3.1-8B",
+                "why_sota": "Best open-weight embedding model, top multilingual performance",
+                "strengths": ["MMTEB #1", "Multilingual", "CC-BY-4.0", "Bidirectional attention"],
+                "use_cases": ["Multilingual RAG", "Global search", "Open-source deployments", "On-prem enterprise"]
+            }
+        },
+        {
+            "id": "qwen3-embedding-8b",
+            "name": "Qwen3-Embedding-8B (Alibaba)",
+            "category": "embeddings",
+            "release_date": "2025-06-05",
+            "is_sota": True,
+            "is_open_source": True,
+            "sota_rank": 3,
+            "sota_rank_open": 2,
+            "metrics": {
+                "notes": "#2 open-source, MTEB multilingual 70.58, strong retrieval + code + classification",
+                "why_sota": "Excellent all-around performance, Apache 2.0, part of 0.6B/4B/8B family",
+                "strengths": ["Multilingual", "Apache 2.0", "Code embeddings", "Scalable family"],
+                "use_cases": ["RAG systems", "Code search", "Multilingual search", "Classification"]
+            }
+        },
+        {
+            "id": "jina-embeddings-v4",
+            "name": "Jina Embeddings v4 (Jina AI)",
+            "category": "embeddings",
+            "release_date": "2025-06-24",
+            "is_sota": True,
+            "is_open_source": True,
+            "sota_rank": 4,
+            "sota_rank_open": 3,
+            "metrics": {
+                "notes": "#3 open-source, multimodal (text+image+PDF), 3.8B on Qwen2.5-VL backbone",
+                "why_sota": "Best open-source multimodal embeddings with task-specific LoRA adapters",
+                "strengths": ["Multimodal", "Task LoRA adapters", "Late interaction", "30+ languages"],
+                "use_cases": ["Multimodal RAG", "Document search", "Code search", "Visual retrieval"]
+            }
+        },
+        {
+            "id": "cohere-embed-v4",
+            "name": "Cohere Embed v4",
+            "category": "embeddings",
+            "release_date": "2025-09-01",
+            "is_sota": True,
+            "is_open_source": False,
+            "sota_rank": 5,
+            "sota_rank_open": None,
+            "metrics": {
+                "notes": "#2 commercial API, compression support, 100+ languages, upgraded from v3",
+                "why_sota": "Strong commercial API with compression for cost-optimized retrieval",
+                "strengths": ["API quality", "Compression", "100+ languages", "Enterprise support"],
+                "use_cases": ["Enterprise RAG", "Production search", "Cost-optimized retrieval"]
+            }
+        },
+        {
+            "id": "voyage-3.5",
+            "name": "Voyage 3.5 (Voyage AI)",
+            "category": "embeddings",
+            "release_date": "2024-11-01",
+            "is_sota": True,
+            "is_open_source": False,
+            "sota_rank": 6,
+            "sota_rank_open": None,
+            "metrics": {
+                "notes": "#3 commercial API, Matryoshka dims, int8/binary quantization",
+                "why_sota": "Strong retrieval with efficient quantization options",
+                "strengths": ["Matryoshka dims", "Quantization", "Cost efficient", "Enterprise search"],
+                "use_cases": ["Enterprise search", "Cost-sensitive RAG", "Quantized deployments"]
+            }
+        },
+        {
+            "id": "nomic-embed-text-v2",
+            "name": "Nomic Embed Text v2 (Nomic AI)",
+            "category": "embeddings",
+            "release_date": "2025-02-11",
+            "is_sota": True,
+            "is_open_source": True,
+            "sota_rank": 7,
+            "sota_rank_open": 4,
+            "metrics": {
+                "notes": "First MoE embedding model, 305M active of 475M params, 100 languages",
+                "why_sota": "Novel MoE architecture gives large-model quality at small-model cost",
+                "strengths": ["MoE architecture", "Efficient", "100 languages", "Apache 2.0"],
+                "use_cases": ["Resource-constrained RAG", "Edge deployment", "Multilingual search"]
+            }
+        },
         {
             "id": "bge-m3",
             "name": "BGE-M3 (BAAI)",
@@ -1307,77 +1418,29 @@ def seed_sota_models(db: sqlite3.Connection):
             "release_date": "2024-06-01",
             "is_sota": True,
             "is_open_source": True,
-            "sota_rank": 1,
-            "sota_rank_open": 1,
+            "sota_rank": 8,
+            "sota_rank_open": 5,
             "metrics": {
-                "notes": "#1 embeddings overall, multilingual (100+ langs), hybrid dense+sparse+ColBERT",
-                "why_sota": "Best retrieval quality with hybrid approach, works across languages",
-                "strengths": ["Multilingual", "Hybrid retrieval", "Dense+Sparse", "ColBERT support"],
-                "use_cases": ["RAG systems", "Semantic search", "Multilingual search", "Document retrieval"]
+                "notes": "Hybrid dense+sparse+ColBERT, 100+ langs, proven in production",
+                "why_sota": "Best hybrid retrieval approach, battle-tested in production RAG systems",
+                "strengths": ["Hybrid retrieval", "Dense+Sparse", "ColBERT", "Production-proven"],
+                "use_cases": ["Hybrid RAG", "Semantic search", "Multilingual search", "Production systems"]
             }
         },
         {
-            "id": "gte-qwen2-7b",
-            "name": "GTE-Qwen2-7B (Alibaba)",
+            "id": "qwen3-embedding-0.6b",
+            "name": "Qwen3-Embedding-0.6B (Alibaba)",
             "category": "embeddings",
-            "release_date": "2025-01-01",
+            "release_date": "2025-06-05",
             "is_sota": True,
             "is_open_source": True,
-            "sota_rank": 2,
-            "sota_rank_open": 2,
+            "sota_rank": 9,
+            "sota_rank_open": 6,
             "metrics": {
-                "notes": "#2 embeddings, 7B param model, best for long documents (8K context)",
-                "why_sota": "Highest quality for long document embedding, MTEB leader",
-                "strengths": ["Long context", "High quality", "8K tokens", "MTEB leader"],
-                "use_cases": ["Long documents", "Legal/medical RAG", "Research papers", "Book search"]
-            }
-        },
-        {
-            "id": "e5-mistral-7b",
-            "name": "E5-Mistral-7B (Microsoft)",
-            "category": "embeddings",
-            "release_date": "2024-03-01",
-            "is_sota": True,
-            "is_open_source": True,
-            "sota_rank": 3,
-            "sota_rank_open": 3,
-            "metrics": {
-                "notes": "#3 embeddings, instruction-tuned, excellent zero-shot performance",
-                "why_sota": "Best zero-shot embedding quality, instruction-following embeddings",
-                "strengths": ["Zero-shot", "Instruction-tuned", "Versatile", "Good defaults"],
-                "use_cases": ["Zero-shot retrieval", "Custom domains", "Instruction-based search"]
-            }
-        },
-        {
-            "id": "jina-embeddings-v3",
-            "name": "Jina Embeddings v3",
-            "category": "embeddings",
-            "release_date": "2025-02-01",
-            "is_sota": True,
-            "is_open_source": True,
-            "sota_rank": 4,
-            "sota_rank_open": 4,
-            "metrics": {
-                "notes": "#4 embeddings, 8K context, late interaction support, task-specific LoRA",
-                "why_sota": "Most versatile with task-specific adapters, good long-context support",
-                "strengths": ["Task adapters", "8K context", "Versatile", "Late interaction"],
-                "use_cases": ["Task-specific retrieval", "Code search", "Multilingual", "Reranking"]
-            }
-        },
-        {
-            "id": "cohere-embed-v3",
-            "name": "Cohere Embed v3",
-            "category": "embeddings",
-            "release_date": "2024-11-01",
-            "is_sota": True,
-            "is_open_source": False,
-            "sota_rank": 5,
-            "sota_rank_open": None,
-            "metrics": {
-                "notes": "#1 commercial embeddings API, compression support, 100+ languages",
-                "why_sota": "Best commercial API with compression for cost savings",
-                "strengths": ["API quality", "Compression", "100+ languages", "Enterprise support"],
-                "use_cases": ["Enterprise RAG", "Production search", "Cost-optimized retrieval"]
+                "notes": "Tiny but capable, best embedding model for edge/on-device use",
+                "why_sota": "Remarkable quality at 0.6B params, Apache 2.0, minimal resource requirements",
+                "strengths": ["Tiny footprint", "Edge/mobile ready", "Apache 2.0", "Good quality/size ratio"],
+                "use_cases": ["Edge deployment", "Mobile apps", "IoT", "Resource-constrained environments"]
             }
         },
     ]

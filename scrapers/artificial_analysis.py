@@ -1,12 +1,12 @@
 """
 Artificial Analysis scraper using Playwright.
 
-Scrapes quality benchmarks from:
-- https://artificialanalysis.ai/leaderboards/models (LLMs)
-- https://artificialanalysis.ai/text-to-image/arena (Image Gen)
-- https://artificialanalysis.ai/text-to-video/arena (Video Gen)
+Extracts rich model data from the RSC (React Server Components) payload
+embedded in the leaderboard page. This captures intelligence scores,
+speed metrics, pricing, and benchmark data that aren't available from
+simple table scraping.
 
-These pages use JavaScript rendering, requiring a real browser.
+Source: https://artificialanalysis.ai/leaderboards/models
 """
 
 import json
@@ -17,279 +17,279 @@ from pathlib import Path
 from typing import Optional
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
 
-# Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from utils.classification import is_open_source
 
-# Project paths (use absolute paths to prevent path traversal)
 PROJECT_DIR = Path(__file__).parent.parent
 DATA_DIR = PROJECT_DIR / "data"
 
 
 class ArtificialAnalysisScraper:
-    """Scrape SOTA data from Artificial Analysis."""
+    """Scrape rich model data from Artificial Analysis RSC payload."""
 
     BASE_URL = "https://artificialanalysis.ai"
+    LLM_URL = f"{BASE_URL}/leaderboards/models"
+    TIMEOUT = 45000
 
-    ENDPOINTS = {
-        "llm": "/leaderboards/models",
-        "image_gen": "/image/arena",
-        "video": "/video/arena",
-        "tts": "/speech/arena",
-    }
+    # Fields to extract from each model in the RSC payload
+    EXTRACT_FIELDS = [
+        "id", "slug", "name", "short_name", "model_family_slug",
+        "intelligence_index", "coding_index", "agentic_index",
+        "is_open_weights", "reasoning_model", "frontier_model",
+        "release_date", "context_window_tokens", "output_tokens",
+        "price_1m_input_tokens", "price_1m_output_tokens", "price_1m_blended_3_to_1",
+        "size_class", "deprecated", "deleted",
+        # Benchmark scores
+        "gpqa", "hle", "humaneval", "scicode", "aime", "aime25",
+        "math_500", "mmlu_pro", "livecodebench", "ifbench",
+        "omniscience", "gdpval", "tau2", "terminalbench_hard", "lcr",
+    ]
 
-    TIMEOUT = 30000  # 30 seconds
+    TIMESCALE_FIELDS = [
+        "median_output_speed",
+        "median_time_to_first_chunk",
+        "median_estimated_total_seconds_for_100_output_tokens",
+        "percentile_05_output_speed",
+        "percentile_95_output_speed",
+    ]
 
     def __init__(self, headless: bool = True):
         self.headless = headless
 
-    def scrape(self, category: str = "llm") -> dict:
+    def scrape(self) -> dict:
         """
-        Scrape a specific category from Artificial Analysis.
+        Scrape the LLM leaderboard, extracting full model data from RSC payload.
 
-        Args:
-            category: One of "llm", "image_gen", "video", "tts"
-
-        Returns:
-            {
-                "source": "artificial_analysis",
-                "category": "llm",
-                "url": "...",
-                "scraped_at": "...",
-                "models": [...]
-            }
+        Returns dict with source metadata and list of models with rich metrics.
         """
-        endpoint = self.ENDPOINTS.get(category)
-        if not endpoint:
-            return {
-                "source": "artificial_analysis",
-                "category": category,
-                "error": f"Unknown category: {category}",
-                "models": []
-            }
-
-        url = f"{self.BASE_URL}{endpoint}"
-
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=self.headless)
             try:
                 page = browser.new_page()
                 page.set_default_timeout(self.TIMEOUT)
 
-                print(f"Navigating to {url}...")
-                page.goto(url, wait_until="domcontentloaded")
+                print(f"Navigating to {self.LLM_URL}...")
+                page.goto(self.LLM_URL, wait_until="domcontentloaded")
+                page.wait_for_timeout(5000)  # Let RSC chunks load
 
-                # Wait for content to load
-                print("Waiting for content to load...")
-                page.wait_for_timeout(3000)  # Give JS time to render
-
-                # Extract data based on category
-                if category == "llm":
-                    models = self._extract_llm_data(page)
-                else:
-                    models = self._extract_arena_data(page, category)
+                models = self._extract_rsc_models(page)
 
                 return {
                     "source": "artificial_analysis",
-                    "category": category,
-                    "url": url,
+                    "category": "llm",
+                    "url": self.LLM_URL,
                     "scraped_at": datetime.now().isoformat(),
                     "model_count": len(models),
-                    "models": models
+                    "models": models,
                 }
 
             except PlaywrightTimeout as e:
                 print(f"Timeout: {e}")
-                return {"source": "artificial_analysis", "category": category, "error": str(e), "models": []}
+                return {"source": "artificial_analysis", "error": str(e), "models": []}
             except Exception as e:
                 print(f"Error: {e}")
-                return {"source": "artificial_analysis", "category": category, "error": str(e), "models": []}
+                return {"source": "artificial_analysis", "error": str(e), "models": []}
             finally:
                 browser.close()
 
-    def scrape_all(self) -> dict:
-        """Scrape all categories."""
-        results = {}
-        for category in self.ENDPOINTS.keys():
-            print(f"\n=== Scraping {category} ===")
-            results[category] = self.scrape(category)
-        return results
+    def _extract_rsc_models(self, page: Page) -> list[dict]:
+        """
+        Extract model data from Next.js RSC flight payload.
 
-    def _extract_llm_data(self, page: Page) -> list[dict]:
-        """Extract LLM leaderboard data."""
+        The page embeds ~5MB of JSON in self.__next_f.push() script tags.
+        We find the chunk containing model data, unescape the RSC encoding,
+        and parse individual model objects.
+        """
+        raw_models = page.evaluate("""
+            (() => {
+                const scripts = document.querySelectorAll('script');
+                for (const s of scripts) {
+                    const t = s.textContent;
+                    if (!t || !t.includes('agentic_index') || t.length < 100000) continue;
+
+                    // Unescape RSC double-encoding: \\" → "
+                    let chunk = t;
+                    chunk = chunk.replace(/\\\\\\\\"/g, '§EQ§');
+                    chunk = chunk.replace(/\\\\"/g, '"');
+                    chunk = chunk.replace(/§EQ§/g, '\\\\"');
+
+                    // Extract individual model objects by finding { ... "intelligence_index": ... }
+                    // Walk through and parse each top-level object in the models array
+                    const models = [];
+                    const marker = '"models":[{';
+                    const mIdx = chunk.indexOf(marker);
+                    if (mIdx === -1) continue;
+
+                    let pos = mIdx + marker.length - 1; // start at the first {
+                    while (pos < chunk.length && models.length < 500) {
+                        // Skip whitespace and commas
+                        while (pos < chunk.length && (chunk[pos] === ',' || chunk[pos] === ' ' || chunk[pos] === '\\n')) pos++;
+
+                        if (chunk[pos] === ']') break; // end of array
+                        if (chunk[pos] !== '{') break; // unexpected
+
+                        // Find matching closing brace, respecting nesting and strings
+                        let depth = 0;
+                        let objStart = pos;
+                        let inString = false;
+                        for (let i = pos; i < chunk.length; i++) {
+                            const ch = chunk[i];
+                            if (inString) {
+                                if (ch === '\\\\') { i++; continue; } // skip escaped char
+                                if (ch === '"') inString = false;
+                                continue;
+                            }
+                            if (ch === '"') { inString = true; continue; }
+                            if (ch === '{') depth++;
+                            if (ch === '}') {
+                                depth--;
+                                if (depth === 0) {
+                                    const objStr = chunk.substring(objStart, i + 1);
+                                    // Replace $undefined with null for valid JSON
+                                    const cleaned = objStr.replace(/\\$undefined/g, 'null');
+                                    try {
+                                        const obj = JSON.parse(cleaned);
+                                        if (obj.intelligence_index !== undefined || obj.name) {
+                                            models.push(obj);
+                                        }
+                                    } catch(e) {
+                                        // Skip unparseable objects
+                                    }
+                                    pos = i + 1;
+                                    break;
+                                }
+                            }
+                        }
+                        if (depth !== 0) break; // malformed, bail
+                    }
+                    return models;
+                }
+                return [];
+            })()
+        """)
+
+        if isinstance(raw_models, dict) and "parseError" in raw_models:
+            print(f"  Parse error: {raw_models['parseError']}")
+            return []
+
+        if not isinstance(raw_models, list):
+            print(f"  Unexpected result type: {type(raw_models)}")
+            return []
+
+        print(f"  Extracted {len(raw_models)} raw models from RSC payload")
+
+        # Transform to our format
         models = []
+        for raw in raw_models:
+            if not isinstance(raw, dict):
+                continue
+            if raw.get("deleted") or raw.get("deprecated"):
+                continue
+            name = raw.get("name")
+            if not name:
+                continue
 
-        # Try to find the leaderboard table
-        rows = page.query_selector_all("table tbody tr")
+            model = self._transform_model(raw)
+            if model:
+                models.append(model)
 
-        if rows:
-            print(f"Found {len(rows)} rows in LLM table")
-            for idx, row in enumerate(rows[:30]):
-                try:
-                    cells = row.query_selector_all("td")
-                    if len(cells) >= 3:
-                        # Extract model info
-                        name_cell = cells[0].inner_text().strip()
-                        # Parse name (might include provider)
-                        name = name_cell.split('\n')[0].strip()
-
-                        # Try to find Elo/score
-                        score = None
-                        for cell in cells[1:]:
-                            text = cell.inner_text().strip()
-                            score_match = re.search(r'[\d,]+', text.replace(',', ''))
-                            if score_match:
-                                val = int(score_match.group())
-                                if 500 < val < 2000:  # Likely Elo score
-                                    score = val
-                                    break
-
-                        if name:
-                            models.append({
-                                "rank": idx + 1,
-                                "name": name,
-                                "elo": score,
-                                "is_open_source": is_open_source(name),
-                                "category": "llm_api",
-                            })
-                except Exception as e:
-                    print(f"Error parsing row {idx}: {e}")
-
-        # Fallback: Try to extract from page content
-        if not models:
-            models = self._extract_from_content(page, "llm")
-
+        print(f"  Transformed {len(models)} active models")
         return models
 
-    def _extract_arena_data(self, page: Page, category: str) -> list[dict]:
-        """Extract arena data for image/video/tts."""
-        models = []
+    def _transform_model(self, raw: dict) -> Optional[dict]:
+        """Transform a raw RSC model object into our storage format."""
+        name = raw.get("name", "")
+        ts = raw.get("timescaleData") or {}
 
-        # Arena pages often have a different structure
-        # Try multiple selectors
-        selectors = [
-            "table tbody tr",
-            "[data-testid='leaderboard-row']",
-            ".leaderboard-item",
-            "[class*='model-row']",
-        ]
-
-        for selector in selectors:
-            rows = page.query_selector_all(selector)
-            if rows:
-                print(f"Found {len(rows)} items with selector: {selector}")
-                break
-
-        if rows:
-            for idx, row in enumerate(rows[:20]):
-                try:
-                    text = row.inner_text().strip()
-                    lines = text.split('\n')
-
-                    # Try to parse name and score
-                    name = lines[0].strip() if lines else ""
-
-                    score = None
-                    for line in lines:
-                        score_match = re.search(r'(\d{3,4})', line)
-                        if score_match:
-                            score = int(score_match.group(1))
-                            break
-
-                    if name and len(name) > 2:
-                        models.append({
-                            "rank": idx + 1,
-                            "name": name,
-                            "elo": score,
-                            "is_open_source": is_open_source(name),
-                            "category": self._map_category(category),
-                        })
-                except Exception as e:
-                    print(f"Error parsing item {idx}: {e}")
-
-        # Fallback
-        if not models:
-            models = self._extract_from_content(page, category)
-
-        return models
-
-    def _extract_from_content(self, page: Page, category: str) -> list[dict]:
-        """Fallback: Extract from page content."""
-        models = []
-        content = page.content()
-
-        # Limit content length to prevent ReDoS attacks (10MB max)
-        if len(content) > 10 * 1024 * 1024:
-            content = content[:10 * 1024 * 1024]
-
-        # Try to find Next.js data
-        # Use [^<]+ instead of .*? to prevent catastrophic backtracking
-        next_data_match = re.search(r'<script id="__NEXT_DATA__" type="application/json">([^<]+)</script>', content)
-        if next_data_match:
-            try:
-                data = json.loads(next_data_match.group(1))
-                # Navigate to find model data
-                props = data.get("props", {}).get("pageProps", {})
-
-                # Look for model lists
-                for key in ["models", "leaderboard", "rankings", "data"]:
-                    if key in props and isinstance(props[key], list):
-                        for idx, item in enumerate(props[key][:30]):
-                            if isinstance(item, dict):
-                                name = item.get("name", item.get("model", item.get("title", "")))
-                                if name:
-                                    models.append({
-                                        "rank": item.get("rank", idx + 1),
-                                        "name": name,
-                                        "elo": item.get("elo", item.get("score", item.get("rating"))),
-                                        "is_open_source": is_open_source(name),
-                                        "category": self._map_category(category),
-                                    })
-                        break
-            except json.JSONDecodeError:
-                pass
-
-        return models
-
-    def _map_category(self, aa_category: str) -> str:
-        """Map scraper category to our internal category."""
-        mapping = {
-            "llm": "llm_api",
-            "image_gen": "image_gen",
-            "video": "video",
-            "tts": "tts",
+        # Build rich metrics dict
+        metrics = {
+            "source": "artificial_analysis",
+            "scraped_at": datetime.now().isoformat(),
         }
-        return mapping.get(aa_category, aa_category)
+
+        # Intelligence & benchmark scores
+        for field in ["intelligence_index", "coding_index", "agentic_index",
+                       "gpqa", "hle", "humaneval", "scicode", "aime", "aime25",
+                       "math_500", "mmlu_pro", "livecodebench", "ifbench",
+                       "omniscience", "gdpval", "tau2", "terminalbench_hard", "lcr"]:
+            val = raw.get(field)
+            if val is not None:
+                metrics[field] = val
+
+        # Speed / performance (from timescaleData)
+        for field in self.TIMESCALE_FIELDS:
+            val = ts.get(field)
+            if val is not None:
+                metrics[field] = val
+
+        # Model metadata
+        for field in ["model_family_slug", "size_class", "reasoning_model",
+                       "frontier_model", "context_window_tokens", "output_tokens",
+                       "short_name", "slug"]:
+            val = raw.get(field)
+            if val is not None:
+                metrics[field] = val
+
+        return {
+            "name": name,
+            "category": "llm_api",
+            "is_open_source": raw.get("is_open_weights", False),
+            "release_date": raw.get("release_date"),
+            "intelligence_index": raw.get("intelligence_index"),
+            "median_output_speed": ts.get("median_output_speed"),
+            "median_ttft": ts.get("median_time_to_first_chunk"),
+            "price_1m_input": raw.get("price_1m_input_tokens"),
+            "price_1m_output": raw.get("price_1m_output_tokens"),
+            "context_window": raw.get("context_window_tokens"),
+            "model_family_slug": raw.get("model_family_slug"),
+            "reasoning_model": raw.get("reasoning_model", False),
+            "metrics": metrics,
+        }
 
 
-
-def scrape_artificial_analysis(category: str = "llm") -> dict:
-    """Convenience function to scrape Artificial Analysis."""
+def scrape_artificial_analysis() -> dict:
+    """Convenience function."""
     scraper = ArtificialAnalysisScraper()
-    return scraper.scrape(category)
+    return scraper.scrape()
 
 
-# CLI test
 if __name__ == "__main__":
-    import sys
-
-    category = sys.argv[1] if len(sys.argv) > 1 else "llm"
-
-    print(f"Scraping Artificial Analysis ({category})...")
-    result = scrape_artificial_analysis(category)
+    print("Scraping Artificial Analysis (full RSC extraction)...")
+    result = scrape_artificial_analysis()
 
     if result.get("error"):
         print(f"Error: {result['error']}")
     else:
         print(f"\nScraped {result['model_count']} models at {result['scraped_at']}")
-        print("\nTop 10:")
-        for m in result["models"][:10]:
-            badge = "" if m["is_open_source"] else " [CLOSED]"
-            elo = m.get("elo", "N/A")
-            print(f"  #{m['rank']} {m['name']}{badge}: Score {elo}")
 
-        # Save to JSON (use absolute path to prevent path traversal)
-        output_path = DATA_DIR / f"aa_{category}_latest.json"
+        # Show top 10 by intelligence
+        models = sorted(
+            [m for m in result["models"] if m.get("intelligence_index")],
+            key=lambda m: m["intelligence_index"],
+            reverse=True,
+        )
+        print("\nTop 10 by Intelligence Index:")
+        for i, m in enumerate(models[:10], 1):
+            speed = m.get("median_output_speed")
+            speed_str = f"{speed:.0f} t/s" if speed else "N/A"
+            price = m.get("price_1m_output")
+            price_str = f"${price:.2f}/M" if price else "N/A"
+            print(f"  {i}. {m['name']}: IQ={m['intelligence_index']:.1f}  Speed={speed_str}  Price={price_str}")
+
+        # Show top 10 by speed
+        fast = sorted(
+            [m for m in result["models"] if m.get("median_output_speed")],
+            key=lambda m: m["median_output_speed"],
+            reverse=True,
+        )
+        print("\nTop 10 by Output Speed:")
+        for i, m in enumerate(fast[:10], 1):
+            iq = m.get("intelligence_index")
+            iq_str = f"IQ={iq:.1f}" if iq else "IQ=N/A"
+            print(f"  {i}. {m['name']}: {m['median_output_speed']:.0f} t/s  {iq_str}")
+
+        # Save
+        output_path = DATA_DIR / "aa_llm_latest.json"
         with open(output_path, "w") as f:
             json.dump(result, f, indent=2)
         print(f"\nSaved to {output_path}")
