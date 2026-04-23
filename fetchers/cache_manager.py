@@ -20,6 +20,8 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
+from utils.db import configure_db_connection
+
 # Import fetchers
 from .huggingface import HuggingFaceFetcher
 from .lmarena import LMArenaFetcher
@@ -63,17 +65,14 @@ class CacheManager:
         """
         db = sqlite3.connect(str(self.db_path), timeout=30.0)
         db.row_factory = sqlite3.Row
-        # Enable WAL mode for better concurrent access
-        db.execute("PRAGMA journal_mode=WAL")
-        return db
+        return configure_db_connection(db)
 
     @contextmanager
     def get_db_context(self):
         """Get database connection as context manager (auto-closes)."""
         db = sqlite3.connect(str(self.db_path), timeout=30.0)
         db.row_factory = sqlite3.Row
-        # Enable WAL mode for better concurrent access
-        db.execute("PRAGMA journal_mode=WAL")
+        configure_db_connection(db)
         try:
             yield db
         finally:
