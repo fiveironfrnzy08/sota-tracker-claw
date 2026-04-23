@@ -29,11 +29,11 @@ Usage:
 import json
 import sqlite3
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Optional
 
 from fastmcp import FastMCP
 
+from constants import DB_PATH, FORBIDDEN_PATH
 from utils.db import get_db as _get_db, get_db_context as _get_db_context
 from utils.hardware import (
     get_profile_with_defaults,
@@ -50,12 +50,6 @@ try:
     CACHE_ENABLED = True
 except ImportError:
     CACHE_ENABLED = False
-
-# Project paths
-PROJECT_DIR = Path(__file__).parent
-DATA_DIR = PROJECT_DIR / "data"
-DB_PATH = DATA_DIR / "sota.db"
-FORBIDDEN_PATH = DATA_DIR / "forbidden.json"
 
 # Initialize MCP server
 mcp = FastMCP(

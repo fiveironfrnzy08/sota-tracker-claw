@@ -27,11 +27,12 @@ logger = get_logger("fetchers.lmarena")
 class LMArenaFetcher:
     """Fetch Elo rankings from Chatbot Arena."""
 
-    # Leaderboard data hosted on HuggingFace Spaces
-    LEADERBOARD_URL = "https://huggingface.co/spaces/lmarena-ai/chatbot-arena-leaderboard/resolve/main/leaderboard_table_20240701.csv"
+    # NOTE: LMArena requires Playwright for JS rendering. These lightweight
+    # fetcher URLs are best-effort — primary data comes from the CI scraper
+    # (scrapers/lmarena.py) via git pull on startup.
+    LEADERBOARD_URL = "https://huggingface.co/datasets/lmarena-ai/lmarena-results/resolve/main/leaderboard_table.csv"
 
-    # Alternative: JSON endpoint (if available)
-    JSON_URL = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/serve/leaderboard/elo_results.json"
+    JSON_URL = "https://raw.githubusercontent.com/lmarena/lmarena.github.io/main/data/leaderboard.json"
 
     def __init__(self, timeout: int = HTTP_TIMEOUT_SECONDS):
         self.timeout = timeout

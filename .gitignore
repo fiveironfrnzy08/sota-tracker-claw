@@ -26,6 +26,10 @@ logs/
 .DS_Store
 Thumbs.db
 
+# SQLite runtime files
+*.db-wal
+*.db-shm
+
 # Playwright
 .playwright/
 

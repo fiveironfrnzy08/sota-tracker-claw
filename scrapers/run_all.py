@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import csv
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -21,10 +22,9 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# Define paths directly (avoid missing constants.py)
 PROJECT_DIR = Path(__file__).parent.parent
-DB_PATH = PROJECT_DIR / "data" / "sota.db"
-DATA_DIR = PROJECT_DIR / "data"
+DATA_DIR = Path(os.environ.get("SOTA_DATA_DIR", PROJECT_DIR / "data")).expanduser()
+DB_PATH = Path(os.environ.get("SOTA_DB_PATH", DATA_DIR / "sota.db")).expanduser()
 
 from utils.models import normalize_model_id
 from utils.db import get_db_context
@@ -60,62 +60,98 @@ def update_models_from_scrape(scraped_data: dict, source: str):
                 "SELECT id, source FROM models WHERE id = ?", (model_id,)
             ).fetchone()
 
+            # Build metrics JSON
+            existing_metrics = {}
             if existing:
-                # Only update if source is 'auto' or same source
-                # Don't overwrite 'manual' entries
-                if existing["source"] in ["auto", source]:
-                    # Get existing metrics and merge with new data
-                    existing_metrics_row = db.execute(
-                        "SELECT metrics FROM models WHERE id = ?", (model_id,)
-                    ).fetchone()
-                    existing_metrics = {}
-                    if existing_metrics_row and existing_metrics_row[0]:
-                        try:
-                            existing_metrics = json.loads(existing_metrics_row[0])
-                        except json.JSONDecodeError:
-                            pass
+                existing_metrics_row = db.execute(
+                    "SELECT metrics FROM models WHERE id = ?", (model_id,)
+                ).fetchone()
+                if existing_metrics_row and existing_metrics_row[0]:
+                    try:
+                        existing_metrics = json.loads(existing_metrics_row[0])
+                    except json.JSONDecodeError:
+                        pass
 
-                    # Merge new scraped data into existing metrics
-                    # Only update scraper-specific fields, preserve manual metadata
-                    # (vram_gb, notes, why_sota, strengths, use_cases, etc.)
-                    if model.get("elo") is not None:
-                        existing_metrics["elo"] = model["elo"]
-                    existing_metrics["scraped_from"] = source
-                    existing_metrics["scraped_at"] = scraped_data.get("scraped_at")
-                    # Preserve any new fields from scraper that don't exist
-                    for key in ["rating", "downloads", "base_model"]:
-                        if (
-                            key in model.get("metrics", {})
-                            and key not in existing_metrics
-                        ):
-                            existing_metrics[key] = model["metrics"][key]
+            # Merge new metrics into existing
+            new_metrics = model.get("metrics", {})
+            for key, val in new_metrics.items():
+                if val is not None:
+                    existing_metrics[key] = val
+            if model.get("elo") is not None:
+                existing_metrics["elo"] = model["elo"]
+            existing_metrics["scraped_from"] = source
+            existing_metrics["scraped_at"] = scraped_data.get("scraped_at")
 
+            # Extract top-level columns from model dict (AA rich fields)
+            intelligence_index = model.get("intelligence_index")
+            median_output_speed = model.get("median_output_speed")
+            median_ttft = model.get("median_ttft")
+            price_1m_input = model.get("price_1m_input")
+            price_1m_output = model.get("price_1m_output")
+            context_window = model.get("context_window")
+            model_family_slug = model.get("model_family_slug")
+            reasoning_model = model.get("reasoning_model", False)
+            release_date = model.get("release_date")
+
+            if existing:
+                # Allow artificial_analysis to enrich any existing model's metrics
+                # (AA provides intelligence_index, speed, pricing that other sources lack)
+                # Only skip updates if a manual entry would be overwritten by a lesser source
+                can_update = (
+                    existing["source"] in ["auto", source]
+                    or source == "artificial_analysis"  # AA enriches all
+                )
+                if can_update:
+                    # Preserve original source if this is an enrichment from AA
+                    update_source = source if existing["source"] in ["auto", source] else existing["source"]
                     db.execute(
                         """
                         UPDATE models
-                        SET sota_rank = ?,
+                        SET sota_rank = COALESCE(?, sota_rank),
                             metrics = ?,
                             last_updated = ?,
-                            source = ?
+                            source = ?,
+                            is_open_source = ?,
+                            release_date = COALESCE(?, release_date),
+                            intelligence_index = COALESCE(?, intelligence_index),
+                            median_output_speed = COALESCE(?, median_output_speed),
+                            median_ttft = COALESCE(?, median_ttft),
+                            price_1m_input = COALESCE(?, price_1m_input),
+                            price_per_1m_output = COALESCE(?, price_per_1m_output),
+                            context_window = COALESCE(?, context_window),
+                            model_family_slug = COALESCE(?, model_family_slug),
+                            reasoning_model = COALESCE(?, reasoning_model)
                         WHERE id = ?
                     """,
                         (
-                            model.get("rank"),  # Use the actual scraped rank
+                            model.get("rank"),
                             json.dumps(existing_metrics),
                             datetime.now().isoformat(),
-                            source,
+                            update_source,
+                            model.get("is_open_source", True),
+                            release_date,
+                            intelligence_index,
+                            median_output_speed,
+                            median_ttft,
+                            price_1m_input,
+                            price_1m_output,
+                            context_window,
+                            model_family_slug,
+                            reasoning_model,
                             model_id,
                         ),
                     )
                     updated += 1
             else:
-                # Insert new model
-                # Civitai models are popular but not SOTA - only mark as SOTA if has benchmark data
                 is_sota = 0 if source == "civitai" else 1
                 db.execute(
                     """
-                    INSERT INTO models (id, name, category, is_open_source, is_sota, sota_rank, metrics, last_updated, source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO models (id, name, category, is_open_source, is_sota, sota_rank,
+                        metrics, last_updated, source, release_date,
+                        intelligence_index, median_output_speed, median_ttft,
+                        price_1m_input, price_per_1m_output, context_window,
+                        model_family_slug, reasoning_model)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         model_id,
@@ -124,21 +160,18 @@ def update_models_from_scrape(scraped_data: dict, source: str):
                         model.get("is_open_source", True),
                         is_sota,
                         model.get("rank"),
-                        json.dumps(
-                            {
-                                "elo": model.get("elo"),
-                                "notes": f"Auto-scraped from {source}"
-                                + (
-                                    " (Popular, not SOTA)"
-                                    if source == "civitai"
-                                    else ""
-                                ),
-                                "scraped_from": source,
-                                "scraped_at": scraped_data.get("scraped_at"),
-                            }
-                        ),
+                        json.dumps(existing_metrics),
                         datetime.now().isoformat(),
                         source,
+                        release_date,
+                        intelligence_index,
+                        median_output_speed,
+                        median_ttft,
+                        price_1m_input,
+                        price_1m_output,
+                        context_window,
+                        model_family_slug,
+                        reasoning_model,
                     ),
                 )
                 inserted += 1
@@ -254,11 +287,14 @@ def run_all_scrapers(export: bool = False):
 
         if result.get("models"):
             count = update_models_from_scrape(result, "artificial_analysis")
+            update_cache_status("llm_api", "artificial_analysis", True)
             print(f"   SUCCESS: {result['model_count']} models scraped\n")
         else:
+            update_cache_status("llm_api", "artificial_analysis", False, result.get("error", "No models returned"))
             print(f"   FAILED: {result.get('error', 'No models')}\n")
     except Exception as e:
         print(f"   ERROR: {e}\n")
+        update_cache_status("llm_api", "artificial_analysis", False, str(e))
 
     # 3. HuggingFace (Open LLM Leaderboard + Trending)
     print("3. Fetching HuggingFace data...")
@@ -291,12 +327,14 @@ def run_all_scrapers(export: bool = False):
                 "scraped_at": datetime.now().isoformat(),
             }
             update_models_from_scrape(result, "huggingface")
+            update_cache_status("embeddings", "huggingface", True)
             results["hf_embed"] = result
             print(f"   SUCCESS: {len(result_embed)} embeddings fetched\n")
 
     except Exception as e:
         print(f"   ERROR: {e}\n")
         update_cache_status("llm_local", "huggingface", False, str(e))
+        update_cache_status("embeddings", "huggingface", False, str(e))
 
     # 4. Civitai (Image Generation)
     print("4. Fetching Civitai image models...")
@@ -335,11 +373,41 @@ def run_all_scrapers(export: bool = False):
     return results
 
 
+def import_from_exports():
+    """Import models from existing JSON export files (no scraping).
+
+    Used on startup to enrich the DB with AA data after git pull.
+    """
+    aa_path = Path(os.environ.get("SOTA_AA_EXPORT_PATH", DATA_DIR / "aa_llm_latest.json")).expanduser()
+    if not aa_path.exists():
+        print("No aa_llm_latest.json found, skipping import")
+        return
+
+    print(f"Importing from {aa_path}...")
+    with open(aa_path) as f:
+        data = json.load(f)
+
+    if data.get("models"):
+        result = {
+            "models": data["models"],
+            "model_count": len(data["models"]),
+            "scraped_at": data.get("scraped_at", datetime.now().isoformat()),
+        }
+        count = update_models_from_scrape(result, "artificial_analysis")
+        print(f"  Imported {count} models from AA export")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run SOTA data scrapers")
     parser.add_argument(
         "--export", action="store_true", help="Export to JSON/CSV after scraping"
     )
+    parser.add_argument(
+        "--import-only", action="store_true", help="Import from existing JSON exports (no scraping)"
+    )
     args = parser.parse_args()
 
-    run_all_scrapers(export=args.export)
+    if args.import_only:
+        import_from_exports()
+    else:
+        run_all_scrapers(export=args.export)

@@ -55,6 +55,17 @@ MIGRATIONS = [
         ALTER TABLE models ADD COLUMN humaneval_score REAL;
         ALTER TABLE models ADD COLUMN swebench_score REAL;
     """, "SELECT 1;"),
+
+    (5, "add_aa_rich_metrics", """
+        -- Add columns for Artificial Analysis rich model data
+        ALTER TABLE models ADD COLUMN intelligence_index REAL;
+        ALTER TABLE models ADD COLUMN median_output_speed REAL;
+        ALTER TABLE models ADD COLUMN median_ttft REAL;
+        ALTER TABLE models ADD COLUMN price_1m_input REAL;
+        ALTER TABLE models ADD COLUMN context_window INTEGER;
+        ALTER TABLE models ADD COLUMN model_family_slug TEXT;
+        ALTER TABLE models ADD COLUMN reasoning_model BOOLEAN DEFAULT FALSE;
+    """, "SELECT 1;"),
 ]
 
 
@@ -83,6 +94,37 @@ def get_pending_migrations(db: sqlite3.Connection) -> list:
     """Get list of migrations that haven't been applied."""
     current = get_current_version(db)
     return [(v, n, up, down) for v, n, up, down in MIGRATIONS if v > current]
+
+
+def ensure_columns(db: sqlite3.Connection):
+    """Ensure all expected columns exist regardless of migration state.
+
+    The remote DB (pushed by CI) may have schema_version at latest but
+    be missing columns if init_db.py was rebuilt without them.
+    """
+    expected = {
+        "models": [
+            ("download_url", "TEXT"),
+            ("price_per_1m_input", "REAL"),
+            ("price_per_1m_output", "REAL"),
+            ("elo_score", "INTEGER"),
+            ("humaneval_score", "REAL"),
+            ("swebench_score", "REAL"),
+            ("intelligence_index", "REAL"),
+            ("median_output_speed", "REAL"),
+            ("median_ttft", "REAL"),
+            ("price_1m_input", "REAL"),
+            ("context_window", "INTEGER"),
+            ("model_family_slug", "TEXT"),
+            ("reasoning_model", "BOOLEAN DEFAULT FALSE"),
+        ]
+    }
+    for table, columns in expected.items():
+        existing = {c[1] for c in db.execute(f"PRAGMA table_info({table})").fetchall()}
+        for col_name, col_type in columns:
+            if col_name not in existing:
+                db.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+    db.commit()
 
 
 def apply_migration(db: sqlite3.Connection, version: int, name: str, sql: str):
@@ -120,6 +162,8 @@ def migrate():
 
         pending = get_pending_migrations(db)
         if not pending:
+            # Still ensure columns exist (git pull may overwrite DB)
+            ensure_columns(db)
             print("Database is up to date.")
             return True
 
@@ -127,6 +171,9 @@ def migrate():
 
         for version, name, up_sql, _ in pending:
             apply_migration(db, version, name, up_sql)
+
+        # Always ensure columns exist (handles CI-rebuilt DBs with stale schema)
+        ensure_columns(db)
 
         print(f"Done. Database is now at version {get_current_version(db)}.")
     return True
