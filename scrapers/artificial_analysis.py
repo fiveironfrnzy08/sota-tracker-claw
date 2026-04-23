@@ -105,7 +105,7 @@ class ArtificialAnalysisScraper:
                 const scripts = document.querySelectorAll('script');
                 for (const s of scripts) {
                     const t = s.textContent;
-                    if (!t || !t.includes('agentic_index') || t.length < 100000) continue;
+                    if (!t || !(t.includes('agentic_index') || t.includes('agenticIndex')) || t.length < 100000) continue;
 
                     // Unescape RSC double-encoding: \\" → "
                     let chunk = t;
@@ -149,7 +149,7 @@ class ArtificialAnalysisScraper:
                                     const cleaned = objStr.replace(/\\$undefined/g, 'null');
                                     try {
                                         const obj = JSON.parse(cleaned);
-                                        if (obj.intelligence_index !== undefined || obj.name) {
+                                        if (obj.intelligence_index !== undefined || obj.intelligenceIndex !== undefined || obj.name) {
                                             models.push(obj);
                                         }
                                     } catch(e) {
@@ -201,6 +201,20 @@ class ArtificialAnalysisScraper:
         name = raw.get("name", "")
         ts = raw.get("timescaleData") or {}
 
+        def pick(*keys):
+            for key in keys:
+                val = raw.get(key)
+                if val is not None:
+                    return val
+            return None
+
+        def pick_ts(*keys):
+            for key in keys:
+                val = ts.get(key)
+                if val is not None:
+                    return val
+            return pick(*keys)
+
         # Build rich metrics dict
         metrics = {
             "source": "artificial_analysis",
@@ -208,41 +222,76 @@ class ArtificialAnalysisScraper:
         }
 
         # Intelligence & benchmark scores
-        for field in ["intelligence_index", "coding_index", "agentic_index",
-                       "gpqa", "hle", "humaneval", "scicode", "aime", "aime25",
-                       "math_500", "mmlu_pro", "livecodebench", "ifbench",
-                       "omniscience", "gdpval", "tau2", "terminalbench_hard", "lcr"]:
-            val = raw.get(field)
+        field_map = {
+            "intelligence_index": ("intelligence_index", "intelligenceIndex"),
+            "coding_index": ("coding_index", "codingIndex"),
+            "agentic_index": ("agentic_index", "agenticIndex"),
+            "gpqa": ("gpqa",),
+            "hle": ("hle",),
+            "humaneval": ("humaneval", "humanEval"),
+            "scicode": ("scicode", "sciCode"),
+            "aime": ("aime",),
+            "aime25": ("aime25",),
+            "math_500": ("math_500", "math500"),
+            "mmlu_pro": ("mmlu_pro", "mmluPro"),
+            "livecodebench": ("livecodebench", "liveCodeBench"),
+            "ifbench": ("ifbench", "ifBench"),
+            "omniscience": ("omniscience",),
+            "gdpval": ("gdpval", "gdpvalNormalized"),
+            "tau2": ("tau2",),
+            "terminalbench_hard": ("terminalbench_hard", "terminalbenchHard"),
+            "lcr": ("lcr",),
+        }
+        for metric_name, keys in field_map.items():
+            val = pick(*keys)
             if val is not None:
-                metrics[field] = val
+                metrics[metric_name] = val
 
         # Speed / performance (from timescaleData)
-        for field in self.TIMESCALE_FIELDS:
-            val = ts.get(field)
+        speed_map = {
+            "median_output_speed": ("median_output_speed", "medianOutputTokensPerSecond"),
+            "median_time_to_first_chunk": ("median_time_to_first_chunk", "medianTimeToFirstTokenSeconds"),
+            "median_estimated_total_seconds_for_100_output_tokens": (
+                "median_estimated_total_seconds_for_100_output_tokens",
+                "medianEndToEndResponseTimeSeconds",
+            ),
+            "percentile_05_output_speed": ("percentile_05_output_speed", "percentile05OutputTokensPerSecond"),
+            "percentile_95_output_speed": ("percentile_95_output_speed", "percentile95OutputTokensPerSecond"),
+        }
+        for metric_name, keys in speed_map.items():
+            val = pick_ts(*keys)
             if val is not None:
-                metrics[field] = val
+                metrics[metric_name] = val
 
         # Model metadata
-        for field in ["model_family_slug", "size_class", "reasoning_model",
-                       "frontier_model", "context_window_tokens", "output_tokens",
-                       "short_name", "slug"]:
-            val = raw.get(field)
+        metadata_map = {
+            "model_family_slug": ("model_family_slug", "modelFamilySlug"),
+            "size_class": ("size_class", "sizeClass"),
+            "reasoning_model": ("reasoning_model", "reasoningModel", "isReasoning"),
+            "frontier_model": ("frontier_model", "frontierModel"),
+            "context_window_tokens": ("context_window_tokens", "contextWindowTokens"),
+            "output_tokens": ("output_tokens", "outputTokens"),
+            "short_name": ("short_name", "shortName"),
+            "slug": ("slug",),
+        }
+        for metric_name, keys in metadata_map.items():
+            val = pick(*keys)
             if val is not None:
-                metrics[field] = val
+                metrics[metric_name] = val
 
         return {
             "name": name,
             "category": "llm_api",
-            "is_open_source": raw.get("is_open_weights", False),
-            "release_date": raw.get("release_date"),
-            "intelligence_index": raw.get("intelligence_index"),
-            "median_output_speed": ts.get("median_output_speed"),
-            "median_ttft": ts.get("median_time_to_first_chunk"),
-            "price_1m_input": raw.get("price_1m_input_tokens"),
-            "price_1m_output": raw.get("price_1m_output_tokens"),
-            "context_window": raw.get("context_window_tokens"),
-            "model_family_slug": raw.get("model_family_slug"),
-            "reasoning_model": raw.get("reasoning_model", False),
+            "is_open_source": pick("is_open_weights", "isOpenWeights") or False,
+            "release_date": pick("release_date", "releaseDate"),
+            "intelligence_index": pick("intelligence_index", "intelligenceIndex"),
+            "median_output_speed": pick_ts("median_output_speed", "medianOutputTokensPerSecond"),
+            "median_ttft": pick_ts("median_time_to_first_chunk", "medianTimeToFirstTokenSeconds"),
+            "price_1m_input": pick("price_1m_input_tokens", "price1mInputTokens"),
+            "price_1m_output": pick("price_1m_output_tokens", "price1mOutputTokens"),
+            "context_window": pick("context_window_tokens", "contextWindowTokens"),
+            "model_family_slug": pick("model_family_slug", "modelFamilySlug"),
+            "reasoning_model": pick("reasoning_model", "reasoningModel", "isReasoning") or False,
             "metrics": metrics,
         }
 

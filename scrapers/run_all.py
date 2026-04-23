@@ -16,6 +16,7 @@ import csv
 import os
 from datetime import datetime
 from pathlib import Path
+from typing import Iterable
 
 # Add parent to path for imports
 import sys
@@ -25,11 +26,126 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 PROJECT_DIR = Path(__file__).parent.parent
 DATA_DIR = Path(os.environ.get("SOTA_DATA_DIR", PROJECT_DIR / "data")).expanduser()
 DB_PATH = Path(os.environ.get("SOTA_DB_PATH", DATA_DIR / "sota.db")).expanduser()
+AA_EXPORT_PATH = Path(os.environ.get("SOTA_AA_EXPORT_PATH", DATA_DIR / "aa_llm_latest.json")).expanduser()
+AA_MIN_MODELS = int(os.environ.get("SOTA_AA_MIN_MODELS", "100"))
+AA_MIN_RICH_MODELS = int(os.environ.get("SOTA_AA_MIN_RICH_MODELS", "50"))
 
 from utils.models import normalize_model_id
 from utils.db import get_db_context
 from scrapers.lmarena import LMArenaScraper
 from scrapers.artificial_analysis import ArtificialAnalysisScraper
+
+
+def unique(values: Iterable[str]) -> list[str]:
+    """Return non-empty strings in first-seen order."""
+    seen = set()
+    result = []
+    for value in values:
+        if not value:
+            continue
+        if value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def effort_aliases(name: str) -> list[str]:
+    """Map verbose AA effort names to the compact upstream names."""
+    if "(" not in name:
+        return []
+
+    base = name.split("(", 1)[0].strip()
+    lower = name.lower()
+    aliases = []
+    if "max effort" in lower or "adaptive reasoning" in lower:
+        aliases.append(f"{base} (max)")
+    if "high effort" in lower:
+        aliases.append(f"{base} (high)")
+    if "medium effort" in lower:
+        aliases.append(f"{base} (medium)")
+    if "low effort" in lower:
+        aliases.append(f"{base} (low)")
+    if "non-reasoning" in lower:
+        aliases.append(base)
+    return aliases
+
+
+def model_id_candidates(model: dict) -> list[str]:
+    """Generate possible DB IDs for the same model across source naming styles."""
+    metrics = model.get("metrics") or {}
+    names = [
+        model.get("id"),
+        model.get("name"),
+        model.get("short_name"),
+        model.get("slug"),
+        metrics.get("short_name"),
+        metrics.get("slug"),
+    ]
+    names.extend(effort_aliases(str(model.get("name") or "")))
+
+    ids = []
+    for value in names:
+        if not value:
+            continue
+        text = str(value)
+        ids.append(normalize_model_id(text))
+
+        if text.endswith("-adaptive"):
+            ids.append(f"{text[:-len('-adaptive')]}-(max)")
+
+    return unique(ids)
+
+
+def find_existing_model(db, candidates: list[str]):
+    """Find the first existing model matching any candidate ID."""
+    if not candidates:
+        return None
+    placeholders = ",".join("?" for _ in candidates)
+    rows = db.execute(
+        f"SELECT id, source FROM models WHERE id IN ({placeholders})",
+        candidates,
+    ).fetchall()
+    by_id = {row["id"]: row for row in rows}
+    for candidate in candidates:
+        if candidate in by_id:
+            return by_id[candidate]
+    return None
+
+
+def rich_export_summary(data: dict) -> dict:
+    """Summarize rich data coverage for status reporting."""
+    models = data.get("models") or []
+    rich_models = [
+        model for model in models
+        if model.get("intelligence_index") is not None
+        or model.get("median_output_speed") is not None
+        or model.get("price_1m_output") is not None
+    ]
+    return {
+        "model_count": len(models),
+        "rich_model_count": len(rich_models),
+        "scraped_at": data.get("scraped_at"),
+        "path": str(AA_EXPORT_PATH),
+    }
+
+
+def validate_rich_export(data: dict):
+    """Reject obviously stale or partial rich exports before replacing cache."""
+    summary = rich_export_summary(data)
+    if summary["model_count"] < AA_MIN_MODELS:
+        raise ValueError(f"AA rich export too small: {summary['model_count']} models")
+    if summary["rich_model_count"] < AA_MIN_RICH_MODELS:
+        raise ValueError(f"AA rich export has too few rich rows: {summary['rich_model_count']}")
+    return summary
+
+
+def write_json_atomic(path: Path, data: dict):
+    """Write JSON using a temp file and atomic replace."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2)
+    tmp_path.replace(path)
 
 
 def update_models_from_scrape(scraped_data: dict, source: str):
@@ -53,12 +169,13 @@ def update_models_from_scrape(scraped_data: dict, source: str):
                 print("  Warning: Skipping model without name field")
                 continue
 
-            model_id = normalize_model_id(model["name"])
+            candidates = model_id_candidates(model)
+            model_id = candidates[0] if candidates else normalize_model_id(model["name"])
 
             # Check if model exists
-            existing = db.execute(
-                "SELECT id, source FROM models WHERE id = ?", (model_id,)
-            ).fetchone()
+            existing = find_existing_model(db, candidates)
+            if existing:
+                model_id = existing["id"]
 
             # Build metrics JSON
             existing_metrics = {}
@@ -117,6 +234,7 @@ def update_models_from_scrape(scraped_data: dict, source: str):
                             median_output_speed = COALESCE(?, median_output_speed),
                             median_ttft = COALESCE(?, median_ttft),
                             price_1m_input = COALESCE(?, price_1m_input),
+                            price_per_1m_input = COALESCE(?, price_per_1m_input),
                             price_per_1m_output = COALESCE(?, price_per_1m_output),
                             context_window = COALESCE(?, context_window),
                             model_family_slug = COALESCE(?, model_family_slug),
@@ -134,6 +252,7 @@ def update_models_from_scrape(scraped_data: dict, source: str):
                             median_output_speed,
                             median_ttft,
                             price_1m_input,
+                            price_1m_input,
                             price_1m_output,
                             context_window,
                             model_family_slug,
@@ -149,9 +268,9 @@ def update_models_from_scrape(scraped_data: dict, source: str):
                     INSERT INTO models (id, name, category, is_open_source, is_sota, sota_rank,
                         metrics, last_updated, source, release_date,
                         intelligence_index, median_output_speed, median_ttft,
-                        price_1m_input, price_per_1m_output, context_window,
+                        price_1m_input, price_per_1m_input, price_per_1m_output, context_window,
                         model_family_slug, reasoning_model)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         model_id,
@@ -168,6 +287,7 @@ def update_models_from_scrape(scraped_data: dict, source: str):
                         median_output_speed,
                         median_ttft,
                         price_1m_input,
+                        price_1m_input,
                         price_1m_output,
                         context_window,
                         model_family_slug,
@@ -182,7 +302,7 @@ def update_models_from_scrape(scraped_data: dict, source: str):
     return updated + inserted
 
 
-def update_cache_status(category: str, source: str, success: bool, error: str = None):
+def update_cache_status(category: str, source: str, success: bool, error: str = None, fetched_at: str = None):
     """Update cache status table."""
     with get_db_context(DB_PATH) as db:
         db.execute(
@@ -190,7 +310,7 @@ def update_cache_status(category: str, source: str, success: bool, error: str = 
             INSERT OR REPLACE INTO cache_status (category, last_fetched, fetch_source, fetch_success, error_message)
             VALUES (?, ?, ?, ?, ?)
         """,
-            (category, datetime.now().isoformat(), source, success, error),
+            (category, fetched_at or datetime.now().isoformat(), source, success, error),
         )
         db.commit()
 
@@ -282,7 +402,7 @@ def run_all_scrapers(export: bool = False):
     print("2. Scraping Artificial Analysis (LLM)...")
     try:
         aa = ArtificialAnalysisScraper()
-        result = aa.scrape("llm")
+        result = aa.scrape()
         results["aa_llm"] = result
 
         if result.get("models"):
@@ -378,9 +498,10 @@ def import_from_exports():
 
     Used on startup to enrich the DB with AA data after git pull.
     """
-    aa_path = Path(os.environ.get("SOTA_AA_EXPORT_PATH", DATA_DIR / "aa_llm_latest.json")).expanduser()
+    aa_path = AA_EXPORT_PATH
     if not aa_path.exists():
         print("No aa_llm_latest.json found, skipping import")
+        update_cache_status("llm_api_rich", "artificial_analysis_export", False, "No aa_llm_latest.json found")
         return
 
     print(f"Importing from {aa_path}...")
@@ -388,6 +509,7 @@ def import_from_exports():
         data = json.load(f)
 
     if data.get("models"):
+        summary = rich_export_summary(data)
         result = {
             "models": data["models"],
             "model_count": len(data["models"]),
@@ -395,6 +517,48 @@ def import_from_exports():
         }
         count = update_models_from_scrape(result, "artificial_analysis")
         print(f"  Imported {count} models from AA export")
+        update_cache_status(
+            "llm_api_rich",
+            data.get("source") or "artificial_analysis_export",
+            summary["rich_model_count"] > 0,
+            json.dumps(summary),
+            fetched_at=summary["scraped_at"],
+        )
+
+
+def refresh_rich_export() -> dict:
+    """Refresh the rich Artificial Analysis export and write it if valid."""
+    print("Refreshing rich Artificial Analysis data...")
+    scraper = ArtificialAnalysisScraper()
+    data = scraper.scrape()
+
+    if data.get("error"):
+        raise RuntimeError(data["error"])
+
+    summary = validate_rich_export(data)
+    write_json_atomic(AA_EXPORT_PATH, data)
+    print(
+        f"  Saved {summary['model_count']} AA models "
+        f"({summary['rich_model_count']} rich) to {AA_EXPORT_PATH}"
+    )
+    update_cache_status(
+        "llm_api_rich",
+        "artificial_analysis",
+        True,
+        json.dumps(summary),
+        fetched_at=summary["scraped_at"],
+    )
+    return data
+
+
+def refresh_rich_and_import():
+    """Refresh rich AA data, then import it into the DB."""
+    try:
+        refresh_rich_export()
+    except Exception as e:
+        update_cache_status("llm_api_rich", "artificial_analysis", False, str(e))
+        raise
+    import_from_exports()
 
 
 if __name__ == "__main__":
@@ -405,9 +569,14 @@ if __name__ == "__main__":
     parser.add_argument(
         "--import-only", action="store_true", help="Import from existing JSON exports (no scraping)"
     )
+    parser.add_argument(
+        "--refresh-rich", action="store_true", help="Refresh rich AA export and import it"
+    )
     args = parser.parse_args()
 
-    if args.import_only:
+    if args.refresh_rich:
+        refresh_rich_and_import()
+    elif args.import_only:
         import_from_exports()
     else:
         run_all_scrapers(export=args.export)
