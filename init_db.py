@@ -652,19 +652,19 @@ def seed_sota_models(db: sqlite3.Connection):
             }
         },
         {
-            "id": "gpt-4.5",
-            "name": "GPT-4.5",
+            "id": "gpt-5.5",
+            "name": "GPT-5.5",
             "category": "llm_api",
-            "release_date": "2025-10-01",
+            "release_date": "2026-04-23",
             "is_sota": True,
             "is_open_source": False,
             "sota_rank": 2,
             "sota_rank_open": None,
             "metrics": {
-                "notes": "#2 API LLM, strongest multimodal (vision, audio, image gen), OpenAI ecosystem",
-                "why_sota": "Best integrated multimodal experience with vision, audio, and generation in one model",
-                "strengths": ["Multimodal", "Vision", "Audio", "Image generation", "Ecosystem"],
-                "use_cases": ["Multimodal apps", "Vision analysis", "Content creation", "ChatGPT plugins"]
+                "notes": "#2 API LLM, OpenAI flagship; SOTA on GDPVal (ties/beats human experts on ~85% of tasks across 44 occupations)",
+                "why_sota": "More intuitive prompting (accomplishes more with less guidance), improved coding/research/data analysis, 6 weeks after GPT-5.4",
+                "strengths": ["Intuitive prompting", "Coding", "Research", "Data analysis", "Multimodal", "Codex integration"],
+                "use_cases": ["ChatGPT apps", "Codex coding agent", "Research assistance", "Data analysis", "Multimodal workflows"]
             }
         },
         {
@@ -800,16 +800,32 @@ def seed_sota_models(db: sqlite3.Connection):
             }
         },
         {
+            "id": "gpt-5.5-codex",
+            "name": "GPT-5.5 (Codex)",
+            "category": "llm_coding",
+            "release_date": "2026-04-23",
+            "is_sota": True,
+            "is_open_source": False,
+            "sota_rank": 4,
+            "sota_rank_open": None,
+            "metrics": {
+                "notes": "OpenAI flagship coder, Codex-integrated; enhanced coding abilities and agentic planning vs GPT-5.4",
+                "why_sota": "Released into ChatGPT and Codex platforms with emphasis on multi-step coding, research, and data analysis",
+                "strengths": ["Codex integration", "Agentic coding", "Intuitive prompting", "Research/data analysis"],
+                "use_cases": ["Codex coding agent", "Multi-step refactors", "Data analysis pipelines", "OpenAI ecosystem"]
+            }
+        },
+        {
             "id": "cursor-claude",
             "name": "Cursor (Claude-based)",
             "category": "llm_coding",
             "release_date": "2025-12-01",
             "is_sota": True,
             "is_open_source": False,
-            "sota_rank": 4,
+            "sota_rank": 5,
             "sota_rank_open": None,
             "metrics": {
-                "notes": "#2 closed-source coder, IDE-integrated with Claude, best autocomplete and inline editing",
+                "notes": "#2 closed-source IDE coder, IDE-integrated with Claude, best autocomplete and inline editing",
                 "why_sota": "Best IDE integration with context-aware autocomplete and inline code editing",
                 "strengths": ["IDE integration", "Autocomplete", "Inline editing", "Context awareness"],
                 "use_cases": ["VS Code replacement", "Real-time coding assistance", "Autocomplete", "Quick edits"]
@@ -822,7 +838,7 @@ def seed_sota_models(db: sqlite3.Connection):
             "release_date": "2024-02-01",
             "is_sota": True,
             "is_open_source": True,
-            "sota_rank": 5,
+            "sota_rank": 6,
             "sota_rank_open": 3,
             "metrics": {
                 "notes": "#3 open-source coder, 16K context, 600+ languages, trained on The Stack v2",
