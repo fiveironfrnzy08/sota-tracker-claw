@@ -145,8 +145,12 @@ class ArtificialAnalysisScraper:
                                 depth--;
                                 if (depth === 0) {
                                     const objStr = chunk.substring(objStart, i + 1);
-                                    // Replace $undefined with null for valid JSON
-                                    const cleaned = objStr.replace(/\\$undefined/g, 'null');
+                                    // RSC encodes missing fields as "$undefined" (quoted string).
+                                    // Replace quoted form first (so the value becomes JSON null,
+                                    // not the string "null"), then handle any unquoted fallback.
+                                    const cleaned = objStr
+                                        .replace(/"\\$undefined"/g, 'null')
+                                        .replace(/\\$undefined/g, 'null');
                                     try {
                                         const obj = JSON.parse(cleaned);
                                         if (obj.intelligence_index !== undefined || obj.intelligenceIndex !== undefined || obj.name) {
