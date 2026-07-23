@@ -217,12 +217,20 @@ class CacheManager:
         now = datetime.now().isoformat()
         with self.get_db_context() as db:
             for model in models:
-                # Use INSERT OR REPLACE to upsert in a single query
-                # This eliminates the N+1 query pattern (SELECT then INSERT/UPDATE)
+                # Non-destructive upsert. INSERT OR REPLACE rewrites the whole row,
+                # which would blank the rich AA spec columns (intelligence_index,
+                # median_output_speed, price_*, release_date, context_window, ...) that
+                # this lightweight fetcher doesn't populate — silently destroying the
+                # specs the rich scraper (scrapers/run_all.py) wrote. On conflict we
+                # only bump rank + freshness and leave every enrichment column, the
+                # metrics JSON, and provenance (source) intact.
                 db.execute("""
-                    INSERT OR REPLACE INTO models
-                    (id, name, category, is_open_source, is_sota, sota_rank, metrics, last_updated, source)
+                    INSERT INTO models
+                        (id, name, category, is_open_source, is_sota, sota_rank, metrics, last_updated, source)
                     VALUES (?, ?, ?, ?, 1, ?, ?, ?, 'auto')
+                    ON CONFLICT(id) DO UPDATE SET
+                        sota_rank = COALESCE(excluded.sota_rank, models.sota_rank),
+                        last_updated = excluded.last_updated
                 """, (
                     model["id"],
                     model["name"],
