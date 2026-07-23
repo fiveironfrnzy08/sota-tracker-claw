@@ -31,6 +31,13 @@ class ArtificialAnalysisScraper:
     LLM_URL = f"{BASE_URL}/leaderboards/models"
     TIMEOUT = 45000
 
+    # The RSC models array is not ordered by rank, so any fixed cap drops an
+    # arbitrary slice — a previous hard cap of 500 silently truncated the top of
+    # the leaderboard (Kimi K3, GPT-5.6 Sol max/xhigh, Claude Fable 5 were all
+    # missing). Walk the array in pages instead, bounded only as a runaway guard.
+    PAGE_SIZE = 250
+    MAX_MODELS = 5000
+
     # Fields to extract from each model in the RSC payload
     EXTRACT_FIELDS = [
         "id", "slug", "name", "short_name", "model_family_slug",
@@ -100,8 +107,8 @@ class ArtificialAnalysisScraper:
         We find the chunk containing model data, unescape the RSC encoding,
         and parse individual model objects.
         """
-        raw_models = page.evaluate("""
-            (() => {
+        js = """
+            (({offset, limit}) => {
                 const scripts = document.querySelectorAll('script');
                 for (const s of scripts) {
                     const t = s.textContent;
@@ -121,12 +128,17 @@ class ArtificialAnalysisScraper:
                     if (mIdx === -1) continue;
 
                     let pos = mIdx + marker.length - 1; // start at the first {
-                    while (pos < chunk.length && models.length < 500) {
+                    let index = 0;          // absolute position within the models array
+                    let hasMore = false;
+                    while (pos < chunk.length) {
                         // Skip whitespace and commas
                         while (pos < chunk.length && (chunk[pos] === ',' || chunk[pos] === ' ' || chunk[pos] === '\\n')) pos++;
 
                         if (chunk[pos] === ']') break; // end of array
                         if (chunk[pos] !== '{') break; // unexpected
+
+                        // Page is full: report that more remain and resume here next call.
+                        if (models.length >= limit) { hasMore = true; break; }
 
                         // Find matching closing brace, respecting nesting and strings
                         let depth = 0;
@@ -151,14 +163,17 @@ class ArtificialAnalysisScraper:
                                     const cleaned = objStr
                                         .replace(/"\\$undefined"/g, 'null')
                                         .replace(/\\$undefined/g, 'null');
-                                    try {
-                                        const obj = JSON.parse(cleaned);
-                                        if (obj.intelligence_index !== undefined || obj.intelligenceIndex !== undefined || obj.name) {
-                                            models.push(obj);
+                                    if (index >= offset) {
+                                        try {
+                                            const obj = JSON.parse(cleaned);
+                                            if (obj.intelligence_index !== undefined || obj.intelligenceIndex !== undefined || obj.name) {
+                                                models.push(obj);
+                                            }
+                                        } catch(e) {
+                                            // Skip unparseable objects
                                         }
-                                    } catch(e) {
-                                        // Skip unparseable objects
                                     }
+                                    index++;
                                     pos = i + 1;
                                     break;
                                 }
@@ -166,19 +181,34 @@ class ArtificialAnalysisScraper:
                         }
                         if (depth !== 0) break; // malformed, bail
                     }
-                    return models;
+                    return {models: models, hasMore: hasMore, nextOffset: index};
                 }
-                return [];
-            })()
-        """)
+                return {models: [], hasMore: false, nextOffset: 0};
+            })
+        """
 
-        if isinstance(raw_models, dict) and "parseError" in raw_models:
-            print(f"  Parse error: {raw_models['parseError']}")
-            return []
+        # Walk the array one page at a time. The JS reports how far it got
+        # (nextOffset) rather than us inferring it from the page size, because
+        # unparseable/nameless entries are skipped without being returned.
+        raw_models = []
+        offset = 0
+        while len(raw_models) < self.MAX_MODELS:
+            batch = page.evaluate(js, {"offset": offset, "limit": self.PAGE_SIZE})
 
-        if not isinstance(raw_models, list):
-            print(f"  Unexpected result type: {type(raw_models)}")
-            return []
+            if not isinstance(batch, dict):
+                print(f"  Unexpected result type: {type(batch)}")
+                break
+
+            raw_models.extend(batch.get("models") or [])
+
+            if not batch.get("hasMore"):
+                break
+
+            next_offset = batch.get("nextOffset") or 0
+            if next_offset <= offset:
+                print("  Pagination stalled (no forward progress); stopping")
+                break
+            offset = next_offset
 
         print(f"  Extracted {len(raw_models)} raw models from RSC payload")
 
