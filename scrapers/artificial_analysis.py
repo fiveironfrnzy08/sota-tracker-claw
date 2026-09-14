@@ -31,13 +31,6 @@ class ArtificialAnalysisScraper:
     LLM_URL = f"{BASE_URL}/leaderboards/models"
     TIMEOUT = 45000
 
-    # The RSC models array is not ordered by rank, so any fixed cap drops an
-    # arbitrary slice — a previous hard cap of 500 silently truncated the top of
-    # the leaderboard (Kimi K3, GPT-5.6 Sol max/xhigh, Claude Fable 5 were all
-    # missing). Walk the array in pages instead, bounded only as a runaway guard.
-    PAGE_SIZE = 250
-    MAX_MODELS = 5000
-
     # Fields to extract from each model in the RSC payload
     EXTRACT_FIELDS = [
         "id", "slug", "name", "short_name", "model_family_slug",
@@ -107,108 +100,11 @@ class ArtificialAnalysisScraper:
         We find the chunk containing model data, unescape the RSC encoding,
         and parse individual model objects.
         """
-        js = """
-            (({offset, limit}) => {
-                const scripts = document.querySelectorAll('script');
-                for (const s of scripts) {
-                    const t = s.textContent;
-                    if (!t || !(t.includes('agentic_index') || t.includes('agenticIndex')) || t.length < 100000) continue;
-
-                    // Unescape RSC double-encoding: \\" → "
-                    let chunk = t;
-                    chunk = chunk.replace(/\\\\\\\\"/g, '§EQ§');
-                    chunk = chunk.replace(/\\\\"/g, '"');
-                    chunk = chunk.replace(/§EQ§/g, '\\\\"');
-
-                    // Extract individual model objects by finding { ... "intelligence_index": ... }
-                    // Walk through and parse each top-level object in the models array
-                    const models = [];
-                    const marker = '"models":[{';
-                    const mIdx = chunk.indexOf(marker);
-                    if (mIdx === -1) continue;
-
-                    let pos = mIdx + marker.length - 1; // start at the first {
-                    let index = 0;          // absolute position within the models array
-                    let hasMore = false;
-                    while (pos < chunk.length) {
-                        // Skip whitespace and commas
-                        while (pos < chunk.length && (chunk[pos] === ',' || chunk[pos] === ' ' || chunk[pos] === '\\n')) pos++;
-
-                        if (chunk[pos] === ']') break; // end of array
-                        if (chunk[pos] !== '{') break; // unexpected
-
-                        // Page is full: report that more remain and resume here next call.
-                        if (models.length >= limit) { hasMore = true; break; }
-
-                        // Find matching closing brace, respecting nesting and strings
-                        let depth = 0;
-                        let objStart = pos;
-                        let inString = false;
-                        for (let i = pos; i < chunk.length; i++) {
-                            const ch = chunk[i];
-                            if (inString) {
-                                if (ch === '\\\\') { i++; continue; } // skip escaped char
-                                if (ch === '"') inString = false;
-                                continue;
-                            }
-                            if (ch === '"') { inString = true; continue; }
-                            if (ch === '{') depth++;
-                            if (ch === '}') {
-                                depth--;
-                                if (depth === 0) {
-                                    const objStr = chunk.substring(objStart, i + 1);
-                                    // RSC encodes missing fields as "$undefined" (quoted string).
-                                    // Replace quoted form first (so the value becomes JSON null,
-                                    // not the string "null"), then handle any unquoted fallback.
-                                    const cleaned = objStr
-                                        .replace(/"\\$undefined"/g, 'null')
-                                        .replace(/\\$undefined/g, 'null');
-                                    if (index >= offset) {
-                                        try {
-                                            const obj = JSON.parse(cleaned);
-                                            if (obj.intelligence_index !== undefined || obj.intelligenceIndex !== undefined || obj.name) {
-                                                models.push(obj);
-                                            }
-                                        } catch(e) {
-                                            // Skip unparseable objects
-                                        }
-                                    }
-                                    index++;
-                                    pos = i + 1;
-                                    break;
-                                }
-                            }
-                        }
-                        if (depth !== 0) break; // malformed, bail
-                    }
-                    return {models: models, hasMore: hasMore, nextOffset: index};
-                }
-                return {models: [], hasMore: false, nextOffset: 0};
-            })
-        """
-
-        # Walk the array one page at a time. The JS reports how far it got
-        # (nextOffset) rather than us inferring it from the page size, because
-        # unparseable/nameless entries are skipped without being returned.
-        raw_models = []
-        offset = 0
-        while len(raw_models) < self.MAX_MODELS:
-            batch = page.evaluate(js, {"offset": offset, "limit": self.PAGE_SIZE})
-
-            if not isinstance(batch, dict):
-                print(f"  Unexpected result type: {type(batch)}")
-                break
-
-            raw_models.extend(batch.get("models") or [])
-
-            if not batch.get("hasMore"):
-                break
-
-            next_offset = batch.get("nextOffset") or 0
-            if next_offset <= offset:
-                print("  Pagination stalled (no forward progress); stopping")
-                break
-            offset = next_offset
+        # Decode the Flight envelope with JSON rather than manually unescaping it.
+        # Model arrays can span script chunks, and selector metadata can precede
+        # the separate rich leaderboard array.
+        scripts = page.locator("script").all_text_contents()
+        raw_models = self._parse_rsc_models(scripts)
 
         print(f"  Extracted {len(raw_models)} raw models from RSC payload")
 
@@ -229,6 +125,44 @@ class ArtificialAnalysisScraper:
 
         print(f"  Transformed {len(models)} active models")
         return models
+
+    @staticmethod
+    def _parse_rsc_models(scripts: list[str]) -> list[dict]:
+        chunks = []
+        decoder = json.JSONDecoder(object_hook=lambda obj: {
+            key: None if value == "$undefined" else value
+            for key, value in obj.items()
+        })
+        for script in scripts:
+            match = re.search(r"self\.__next_f\.push\(\s*", script)
+            if not match:
+                continue
+            try:
+                envelope, _ = decoder.raw_decode(script[match.end():])
+            except ValueError:
+                continue
+            if (isinstance(envelope, list) and len(envelope) > 1
+                    and envelope[0] == 1 and isinstance(envelope[1], str)):
+                chunks.append(envelope[1])
+
+        payload = "".join(chunks)
+        metadata = {}
+        rich_models = {}
+        for match in re.finditer(r'"models"\s*:\s*(?=\[)', payload):
+            try:
+                rows, _ = decoder.raw_decode(payload[match.end():])
+            except ValueError:
+                continue
+            for row in rows:
+                if not isinstance(row, dict) or not row.get("name"):
+                    continue
+                key = row.get("slug") or row["name"]
+                if "intelligenceIndex" in row or "intelligence_index" in row:
+                    rich_models[key] = row
+                else:
+                    metadata[key] = row
+        return [{**metadata.get(key, {}), **row}
+                for key, row in rich_models.items()]
 
     def _transform_model(self, raw: dict) -> Optional[dict]:
         """Transform a raw RSC model object into our storage format."""
